@@ -5,11 +5,14 @@
 // Add cursor en el centro y comprobar colision con las mallas 
 
 // Variables globales consensuadas
-var renderer, scene, camera, loader;
-var hudCanvas, hudSc
+var renderer, scene, camera;
+var loader, fontLoader; 
+var first_time_init = true; 
+var first_time_simulate = true; 
 // Time 
 var lastTime = Date.now(); 
 var elapsedTime = 0; 
+var regenerationTime = 0; 
 // Set up physics lib 
 Physijs.scripts.worker = 'lib/physijs_worker.js'; // relative html
 Physijs.scripts.ammo = 'ammo.js'; // relative physijs
@@ -17,23 +20,78 @@ var physics_stats;
 // Pointer 
 var raycaster, intersects; 
 // Array of meteors 
-var meteors = []; 
+var meteors = [];
+// Spacecraft 
+var spacecraft; 
+
+// Lights 
+var luzAmbiente;
 
 // Set up game 
 const MAX_NUM_METEORS = 5; 
 const PROB_GOLDEN_METEOR = 0.2; 
-var lvl = 1; 
-var score = 0; 
+const MAX_HP = 3;
+const TIME_RESTO_HP = 4; // seconds  
+const OP_INCRE = 0.15; 
+var lvl, hp, alive, score; 
+var scoreText, scoreMat; 
 
 // audio 
 var audioFile = 'audio/track2.mp3';
 var blopFile = 'audio/blop.mp3'; 
-var blopSound; 
+var punchFile = 'audio/punch.mp3'; 
+var explosionFile = 'audio/explosion.mp3'; 
+var songAudio, blopSound, punchSound, explosionSound; 
+
+// Font 
+var fontProperties = {
+    size: 20,
+    height: 0,
+    curveSegments: 4,
+    bevelThickness: 1,
+    bevelSize: 0,
+    bevelEnabled: true
+}
+
+// Game Over 
+var button; 
+const ROT_SPEED = 0.01; 
 
 // Call functions 
-init();
-loadScene(); 
-render();
+start(); 
+
+function start(){
+	if(first_time_init){
+		init(); 
+		first_time_init = false; 
+	}
+	reset();
+	loadScene(); 
+	// audio
+	songAudio.play(); 
+	render();
+}
+
+function cleanScene(){
+	// deadline made this :(
+	scene = new Physijs.Scene;
+    scene.setGravity(new THREE.Vector3(0,0,0)); 
+    // Listener update Scene 
+    scene.addEventListener('update', updatePhysi);
+	// Add camera again 
+	scene.add(camera); 
+	// Add lights again 
+	scene.add(luzAmbiente);
+}
+
+function reset(){
+	cleanScene(); 
+	// setUp game 
+	lvl = 1; 
+	score = 0; 
+	alive = true; 
+	hp = MAX_HP; 
+}
 
 function init(){
 	// 3D Scene 
@@ -77,11 +135,11 @@ function init(){
 	    reticle: {
 	        visible: true,
 	        restPoint: 1000, //Defines the reticle's resting point when no object has been targeted
-	        color: 0xFFFF00,
+	        color: 0x00FF00,
 	        innerRadius: 0.002,
 	        outerRadius: 0.005,
 	        hover: {
-	            color: 0xFFFF00,
+	            color: 0x00FF00,
 	            innerRadius: 0.02,
 	            outerRadius: 0.024,
 	            speed: 5,
@@ -90,7 +148,7 @@ function init(){
 	    },
 	    fuse: {
 	        visible: true,
-	        duration: 1,
+	        duration: 0.75,
 	        color: 0x00fff6,
 	        innerRadius: 0.045,
 	        outerRadius: 0.06,
@@ -102,32 +160,51 @@ function init(){
     scene.add( camera );
 
 	// Lights  
-	var luzAmbiente = new THREE.AmbientLight(0x444444); 
+	luzAmbiente = new THREE.AmbientLight(0x444444); 
 	scene.add(luzAmbiente); 
 
 	// Enable listener of android-chrome-controller to track the motion of the phone 
 	window.addEventListener('deviceorientation', setOrientationControls, true); 
 
-	// Initialice loader 
+	// Initialize loader 
 	loader = new THREE.TextureLoader(); 
+	fontLoader = new THREE.FontLoader()
 
-	// Audio 
-	var audio = document.createElement('audio'); 
+	// Initialize all the variables of the audio 
+	initAudio(); 
+
+	// From zero  
+	lvl = 1; 
+	score = 0; 
+	alive = true; 
+	hp = MAX_HP; 
+
+	// Turn on Stereo Effect 
+    effect = new THREE.StereoEffect(renderer); 
+    effect.setSize( window.innerWidth, window.innerHeight); 
+}
+
+function initAudio(){
+	// Song
+	songAudio = document.createElement('audio'); 
 	var source = document.createElement('source'); 
 	source.src = audioFile; 
-	audio.appendChild(source); 
+	songAudio.appendChild(source); 
+	// Blop 
 	blopSound = document.createElement('audio'); 
 	var blopSource = document.createElement('source'); 
 	blopSource.src = blopFile; 
 	blopSound.appendChild(blopSource); 
-	
-
-    // Stereoscopic view 
-    // effect = new THREE.StereoEffect(renderer); 
-    // effect.setSize( window.innerWidth, window.innerHeight); 
-	
-    // audio
-	// audio.play(); 
+	// Punch 
+	punchSound = document.createElement('audio'); 
+	var punchSource = document.createElement('source'); 
+	punchSource.src = punchFile; 
+	punchSound.appendChild(punchSource); 
+	// Explosion 
+	explosionSound = document.createElement('audio'); 
+	var explosionSource = document.createElement('source'); 
+	explosionSource.src = explosionFile; 
+	explosionSound.appendChild(explosionSource); 
 }
 
 function loadScene() {
@@ -143,37 +220,73 @@ function loadScene() {
 	scene.add(universe);
 
 	/* Spacecraft */ 
-	var spacecraftGeo = new THREE.SphereGeometry(1.5); 
-	var spacecraftMat = new THREE.MeshBasicMaterial({transparent:true, opacity:0, color:"red"});
-	var spacecraft = new Physijs.SphereMesh(spacecraftGeo, spacecraftMat, 
+	var spacecraftGeo = new THREE.SphereGeometry(2); 
+	var spacecraftMat = new THREE.MeshBasicMaterial({transparent:true, opacity:0, color:"red", side: THREE.BackSide});
+	spacecraft = new Physijs.SphereMesh(spacecraftGeo, spacecraftMat, 
 		0 // masa 0 ti make it immobile
 		); 
 	spacecraft.position.set(0,0,0); 
-	spacecraft.name = "spacecraft"
+	spacecraft.name = "spacecraft";
 	spacecraft.addEventListener('collision', handleCollisionSpacecraft);
 	scene.add(spacecraft); 
 
-	// displayScore(10); 
+	// Test 
+	fontLoader.load('fonts/helvetiker_bold.typeface.js', function(font){
+		fontProperties.font = font; 
+		scoreMat = new THREE.MeshBasicMaterial({color:0x86FFFC}); 
+		var textGeo = new THREE.TextGeometry("0", fontProperties); 
+		scoreText = new THREE.Mesh(textGeo , scoreMat); 
+		scoreText.rotation.y = -Math.PI/2;
+		scoreText.position.set(200,0,0);
+		scene.add(scoreText); 
+	})
 }
 
 function update3d(){
 	// Reticulum 
 	Reticulum.update(); 
+	if(alive){
+		// time 
+		var now = Date.now(); 
+		// Evitar grandes saltos 
+		var delta = Math.min(100, now - lastTime); 
+		elapsedTime += delta; 
+		lastTime = now; 
 
-	// time 
-	var now = Date.now(); 
-	// Evitar grandes saltos 
-	var delta = Math.min(100, now - lastTime); 
-	elapsedTime += delta; 
-	lastTime = now; 
-
-	// Check updates 
-	if(elapsedTime > 1000){
-		// Keep same number of meteors in the space 
-		if (MAX_NUM_METEORS*lvl > meteors.length){
-			spawnMeteor();
+		// Check updates 
+		if(elapsedTime > 1000){
+			if(score > lvl*10){
+				lvl += 1; 
+			}
+			// Keep same number of meteors in the space 
+			if (MAX_NUM_METEORS*lvl > meteors.length){
+				spawnMeteor();
+			}
+			elapsedTime = 0; 
+			// Check if the regeneration should start 
+			if(hp < MAX_HP){
+				regenerationTime += 1;  
+			} 
+			// Restore hp each TIME_RESTO_HP secnds
+			if (regenerationTime > TIME_RESTO_HP){
+				if(hp < MAX_HP)
+					hp += 1; 
+					spacecraft.material.opacity -= OP_INCRE; 
+				regenerationTime = 0; 
+			}
 		}
-		elapsedTime = 0; 
+
+		// Check if you're alive 
+		if(hp <= 0){
+			explosionSound.play(); 
+			gameOver();  
+		}
+	}// not alive 
+	else{
+		// Rotate button 
+		button.rotation.x -= ROT_SPEED * 2;
+    	button.rotation.y -= ROT_SPEED;
+    	button.rotation.z -= ROT_SPEED * 3;
 	}
 }
 
@@ -185,6 +298,59 @@ function updatePhysi() {
 		meteors[i].setLinearVelocity(force); 
 	}
 	
+}
+
+function updateScore(){
+	// remove old score 
+	scene.remove(scoreText);
+	// create new score  
+	var s = "" + score; 
+	var textGeo = new THREE.TextGeometry(s, fontProperties); 
+	scoreText = new THREE.Mesh(textGeo , scoreMat); 
+	scoreText.rotation.y = -Math.PI/2;
+	scoreText.position.set(200,0,0);
+	scene.add(scoreText); 
+}
+
+function gameOver(){
+	songAudio.pause(); 
+	songAudio.currentTime = 0; 
+	alive = false; 
+	meteors = []; 
+	cleanScene(); 
+
+	// Draw UI Game Over and Replay 
+	var textGeo = new THREE.TextGeometry("SCORE", fontProperties); 
+	var gameOverText = new THREE.Mesh(textGeo , scoreMat); 
+	gameOverText.rotation.y = -Math.PI/2;
+	gameOverText.position.set(175,15,-35);
+	scene.add(gameOverText);
+	// Score number 
+	var string = "" + score; 
+	var textGeo = new THREE.TextGeometry(string, fontProperties); 
+	var scoreCounter = new THREE.Mesh(textGeo , scoreMat); 
+	scoreCounter.rotation.y = -Math.PI/2;
+	scoreCounter.position.set(175,-15,0);
+	scene.add(scoreCounter);
+	// Play again text 
+	var againGeo = new THREE.TextGeometry("Try again", fontProperties); 
+	var againMat = new THREE.MeshBasicMaterial({color:"white"})
+	var again = new THREE.Mesh(againGeo , againMat); 
+	again.rotation.y = Math.PI/2;
+	again.position.set(-175, 20, 80); 
+	scene.add(again); 
+	// Add the box 
+	var boxGeo = new THREE.BoxGeometry(20,20,20); 
+	var boxMat = new THREE.MeshNormalMaterial();
+	button = new THREE.Mesh(boxGeo , boxMat);  
+	Reticulum.add( button, {
+	    onGazeLong: function(){ 
+	    	this.visible = false; 
+			start();    
+	    }
+	});
+	button.position.set(-175,-20,20); 
+	scene.add(button); 
 }
 
 /*
@@ -208,20 +374,6 @@ function setOrientationControls(e) {
 	window.removeEventListener('deviceorientation', setOrientationControls, true);
 }
 
-function displayScore(score){
-	var string = "Score: "+score; 
-	var textGeo = new THREE.TextGeometry(string, {size:2}); 
-
-	var scoreMesh = new THREE.Mesh(textGeo, 
-		new THREE.MeshBasicMaterial({color: 0xffffff})
-	);
-
-	// Move the text to the top 
-	scoreMesh.position.x = 20; 
-	
-	scene.add(scoreMesh);
-}
-
 function spawnMeteor(){
 	var type = "standard"; 
 	var material; 
@@ -233,8 +385,8 @@ function spawnMeteor(){
 	var y = Math.round(Math.random() * 250)*plusOrMinus;
 	plusOrMinus = Math.random() < 0.5 ? -1 : 1; 
 	var z = Math.round(Math.random() * 250)*plusOrMinus;
-    // Calculate vec velocity respect to 0,0,0
-    var mod = Math.sqrt((x*x)+(y*y)+(z*z))
+    // Calculate vec velocity respect to camera position 
+    var mod = Math.sqrt(((camera.position.x - x)**2)+((camera.position.y - y)**2)+((camera.position.z - z)**2))
     var _vel = new THREE.Vector3(-(x/mod),-(y/mod),-(z/mod));
     _vel.multiplyScalar(lvl*10);  
 	/* Define type */
@@ -244,7 +396,7 @@ function spawnMeteor(){
 		_vel.multiplyScalar(2);
 	}else{
 		// var texturaUniverso = loader.load('images/8bit-colors.jpg');
-		material = new THREE.MeshBasicMaterial({color: "red"});
+		material = new THREE.MeshBasicMaterial({color: "white"});
 	}
 	/* Create Mesh */ 
     var meteor = new Physijs.BoxMesh(
@@ -265,36 +417,24 @@ function spawnMeteor(){
     Reticulum.add( meteor, {
 	    onGazeOver: function(){
 	        // do something when user targets object
-
+	        this.material.color.g -= 0.5;
 	    },
 	    onGazeOut: function(){
 	        // do something when user moves reticle off targeted object
+	        this.material.color.g += 0.5;
 	    },
-	    onGazeLong: function(){
-	    	var i; var found = false;
-	    	// Find correct element  
-	    	for(i = 0; i < meteors.length; i++){
-	    		if(this.uuid == meteors[i].uuid){
-	    			found = true; 
-	    			break; 
-	    		}
-	    	}
-	    	// If found, remove element 
-			if (found){
-				meteors.splice(i,1); 
-				this.visible = false;  // No se por que, pero realmente no los borra de las escena
+	    onGazeLong: function(){ 
+			if (removeMeteor(this)){
 				score += (this.name == "standard") ? 1 : 10;
-				scene.remove(this);
+				// updateScore 
+				updateScore(); 
 				// audio
-				// blopSound.play(); 
+				blopSound.play(); 
 			}  
-	    },
-	    onGazeClick: function(){
-	        // have the object react when user clicks / taps on targeted object
-	        // this.material.emissive.setHex( 0x0000cc );
 	    }
 	});
-
+    // add event listener for the collisions 
+    meteor.addEventListener('collision', handleCollisionMeteor);
 
     // add to the scene 
     scene.add( meteor );
@@ -302,7 +442,41 @@ function spawnMeteor(){
 
 function handleCollisionSpacecraft(collided_with, linearVelocity, angularVelocity){
 	// Pintar la sphera de color rojo e ir reduciendo la intensidad 
-	
+	if(collided_with.name == "standard"){
+		this.material.opacity += OP_INCRE; 
+		hp -= 1; 
+	}else{  
+		if(collided_with.name == "golden"){
+			this.material.opacity += OP_INCRE * 2; 
+			hp -= 2;
+		}
+	}
+}
+
+function handleCollisionMeteor(collided_with, linearVelocity, angularVelocity){
+	// If a meteor collided with the space, remove it 
+	removeMeteor(this);
+	// play song 
+	punchSound.play();  
+}
+
+function removeMeteor(meteor){
+	var i; var found = false;
+	// Find correct element  
+	for(i = 0; i < meteors.length; i++){
+		if(meteor.uuid == meteors[i].uuid){
+			found = true; 
+			break; 
+		}
+	}
+	if(found){
+		meteors.splice(i,1); 
+		meteor.visible = false;  // Idk why, but something weird happens here 
+		scene.remove(meteor); 
+		return true; 
+	}else{
+		return false; 
+	}
 }
 
 function render(){
@@ -311,7 +485,7 @@ function render(){
 	// Threejs update 
 	update3d();
 	// Render 3D Scene  
-	renderer.render( scene, camera );
-	// Re-loop
-	requestAnimationFrame( render );	 
+	effect.render(scene, camera); 
+	// Re-loop 
+	requestAnimationFrame( render );
 }
