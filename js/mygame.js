@@ -160,7 +160,7 @@ function init(){
     scene.add( camera );
 
 	// Lights  
-	luzAmbiente = new THREE.AmbientLight(0x444444); 
+	luzAmbiente = new THREE.AmbientLight(0x999999); 
 	scene.add(luzAmbiente); 
 
 	// Enable listener of android-chrome-controller to track the motion of the phone 
@@ -210,7 +210,7 @@ function initAudio(){
 function loadScene() {
 	/* Universe */
 	var uniGeo = new THREE.SphereGeometry(1500,100,100);
-	var texturaUniverso = loader.load('textures/uniSphere.png'); 
+	var texturaUniverso = loader.load('textures/u2.png'); 
 	var uniMat = new THREE.MeshLambertMaterial({
 				side: THREE.BackSide,
 				map: texturaUniverso
@@ -455,7 +455,8 @@ function handleCollisionSpacecraft(collided_with, linearVelocity, angularVelocit
 
 function handleCollisionMeteor(collided_with, linearVelocity, angularVelocity){
 	// If a meteor collided with the space, remove it 
-	removeMeteor(this);
+	if(collided_with.name == "spacecraft")
+		removeMeteor(this);
 	// play song 
 	punchSound.play();  
 }
